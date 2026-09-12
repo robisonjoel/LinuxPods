@@ -596,9 +596,9 @@ impl Coordinator {
 
         let state = PodState {
             source: DataSource::Aap,
-            left_battery: info.left.map(|b| b.level),
-            right_battery: info.right.map(|b| b.level),
-            case_battery: info.case.map(|b| b.level),
+            left_battery: info.left.and_then(|b| b.available_level()),
+            right_battery: info.right.and_then(|b| b.available_level()),
+            case_battery: info.case.and_then(|b| b.available_level()),
             left_charging: info.left.is_some_and(|b| b.is_charging()),
             right_charging: info.right.is_some_and(|b| b.is_charging()),
             case_charging: info.case.is_some_and(|b| b.is_charging()),
@@ -729,6 +729,7 @@ impl Coordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aap::battery::{Battery, Component, Status};
 
     fn entry(age: Duration) -> Entry {
         Entry {
@@ -807,6 +808,40 @@ mod tests {
             snapshot.known_keys.len(),
             coordinator.known_key_count().await
         );
+    }
+
+    /// Regression: the case showed a confident 0% the moment the earbuds came out
+    /// of it, because the disconnected component's level byte was passed through.
+    #[tokio::test]
+    async fn a_disconnected_case_reports_no_battery_rather_than_zero() {
+        let coordinator = Coordinator::new().await.expect("coordinator");
+        let rx = coordinator.subscribe();
+        let _ = rx.try_recv();
+
+        // Earbuds in the ears, case shut and reporting nothing: status 4.
+        let info = aap::BatteryInfo {
+            left: Some(Battery {
+                component: Component::Left,
+                level: 100,
+                status: Status::Discharging,
+            }),
+            right: None,
+            case: Some(Battery {
+                component: Component::Case,
+                level: 0,
+                status: Status::Disconnected,
+            }),
+        };
+        coordinator.handle_battery_info(info, "aa").await;
+
+        let snapshot = rx.try_recv().expect("a snapshot per battery packet");
+        let state = &snapshot.states["aa"];
+        assert_eq!(state.left_battery, Some(100), "a real reading survives");
+        assert_eq!(
+            state.case_battery, None,
+            "a disconnected case has no level to show"
+        );
+        assert!(!state.case_charging);
     }
 
     /// Regression: a dropped AAP link left the UI reporting Source: AAP forever,

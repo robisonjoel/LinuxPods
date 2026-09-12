@@ -74,6 +74,19 @@ impl Battery {
     pub fn is_charging(&self) -> bool {
         self.status == Status::Charging
     }
+
+    /// The level, but only when it is a reading.
+    ///
+    /// A component the device reports as `Disconnected` still carries a level
+    /// byte, and that byte is 0 - the case sends it as soon as the earbuds are
+    /// out of it. Passing it through claims a flat battery. Levels above 100 are
+    /// the other way the firmware says "no reading".
+    pub fn available_level(&self) -> Option<u8> {
+        if self.status == Status::Disconnected || self.level > 100 {
+            return None;
+        }
+        Some(self.level)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -194,5 +207,32 @@ mod tests {
     fn ignores_unknown_components() {
         let info = parse_battery_packet(&packet(&[(99, 50, 2)])).unwrap();
         assert_eq!(info, BatteryInfo::default());
+    }
+
+    #[test]
+    fn a_disconnected_component_has_no_usable_level() {
+        // Status 4 is what the case reports once the earbuds are out of it. The
+        // level byte that rides along is 0, and 0 is not a reading - showing it
+        // would claim a flat case.
+        let info = parse_battery_packet(&packet(&[(8, 0, 4)])).unwrap();
+        assert_eq!(info.case.unwrap().available_level(), None);
+    }
+
+    #[test]
+    fn a_level_above_100_is_not_a_reading() {
+        let info = parse_battery_packet(&packet(&[(8, 255, 2)])).unwrap();
+        assert_eq!(info.case.unwrap().available_level(), None);
+    }
+
+    #[test]
+    fn a_normal_reading_keeps_its_level() {
+        let info = parse_battery_packet(&packet(&[(8, 42, 2)])).unwrap();
+        assert_eq!(info.case.unwrap().available_level(), Some(42));
+    }
+
+    #[test]
+    fn a_disconnected_component_is_not_charging() {
+        let info = parse_battery_packet(&packet(&[(8, 0, 4)])).unwrap();
+        assert!(!info.case.unwrap().is_charging());
     }
 }
